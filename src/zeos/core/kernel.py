@@ -283,6 +283,10 @@ class KernelError(RuntimeError):
 class KernelConfig:
     seed: int = 0
     case: str = "unnamed"
+    #: Digest of the descriptor tree this kernel runs, journalled at start. The
+    #: kernel never computes it -- hashing files is I/O -- so whoever loaded the
+    #: tree supplies it.
+    case_digest: str = ""
     #: Preemptions without progress before a starvation fault. Loud by design: real-time
     #: systems should fail visibly rather than silently age priorities (core §5.5).
     starvation_limit: int = 8
@@ -424,6 +428,7 @@ class Kernel:
                 seed=self.config.seed,
                 block_size=self.machine.block_size,
                 case=self.config.case,
+                case_digest=self.config.case_digest,
             )
         )
         for pipe in self.pipes.all():

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from zeos.core.events import Event
@@ -104,7 +104,12 @@ def build_kernel(
     config: KernelConfig | None = None,
     block_size: int = 16,
 ) -> tuple[Kernel, PipeTransport]:
-    """Assemble a kernel from a loaded case, on the case's own scripts unless a machine is given."""
+    """Assemble a kernel from a loaded case, on the case's own scripts unless a machine is given.
+
+    The bundle's digest is stamped into the configuration here, whatever the caller
+    passed: which tree a kernel runs is a fact about the bundle, and this is the one
+    place a bundle becomes a kernel.
+    """
     if machine is None:
         machine = ScriptedMachine(bundle.scripts, block_size=block_size)
     pipes = PipeTable(bundle.pipes)
@@ -121,7 +126,7 @@ def build_kernel(
         gates=bundle.gates,
         journal_sink=journal_sink,
         on_event=on_event,
-        config=config or KernelConfig(case=bundle.name),
+        config=replace(config or KernelConfig(case=bundle.name), case_digest=bundle.digest),
     )
     for obj, value in sorted(bundle.world.items()):
         world.set(ObjectName(obj), value, at=kernel.clock)
