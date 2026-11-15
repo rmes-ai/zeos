@@ -130,6 +130,10 @@ class KernelStarted(Event):
     seed: int
     block_size: int
     case: str
+    #: A digest of the descriptor tree the kernel was assembled from, which is what
+    #: lets a journal be held against the tree it claims to be a run of. Empty for a
+    #: kernel assembled in code, where there is no tree on disk to name.
+    case_digest: str = ""
 
 
 @event_class
