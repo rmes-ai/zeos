@@ -160,3 +160,23 @@ def test_every_firing_is_still_handled_in_order() -> None:
     kernel, events = _storm(200)
     kernel.run_until_quiescent()
     assert len([e for e in _of(events, JobSpawned) if str(e.descriptor) == "h"]) == 200
+
+
+def test_a_pipe_write_after_a_storm_does_not_walk_the_finished_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waking a pipe's readers asks the scheduler for the pinned-idle jobs. That
+    question is about jobs that can still run, so two hundred finished handlers
+    must not be part of answering it."""
+    kernel, events = _storm(200)
+    kernel.run_until_quiescent()
+    assert len(kernel.sched.in_state(JobState.DONE)) == 201, "terminal states still resolve"
+
+    def walked() -> tuple[Any, ...]:
+        raise AssertionError("a pipe write walked every job the kernel has finished")
+
+    monkeypatch.setattr(kernel.sched, "jobs", walked)
+    kernel.deliver(KEYS, "x")
+    kernel.run_until_quiescent()
+
+    assert len([e for e in _of(events, JobSpawned) if str(e.descriptor) == "h"]) == 201
