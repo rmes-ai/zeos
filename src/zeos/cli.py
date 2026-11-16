@@ -10,7 +10,8 @@ Four verbs, matching the four things you do with a descriptor tree:
 
 ``lint``     typecheck the tree without running it -- the compiler
 ``run``      execute it against a schedule of external events
-``replay``   re-read a journal and check it reproduces
+``replay``   re-read a journal and check it reproduces; with ``--case``, run the
+             tree again and check the run reproduces the journal
 ``inspect``  summarise a journal: what preempted what, what faulted, what resumed
 ``debug``    draw the tree, and step a journal of it -- the wiring, and the run
 
@@ -18,6 +19,14 @@ Four verbs, matching the four things you do with a descriptor tree:
 parsed structures: a comparison tolerant of key reordering would miss exactly the
 bug class the gate exists for, which is nondeterministic iteration order leaking
 into kernel decisions.
+
+``replay --case`` asks the stronger question. Re-reading a journal shows that the
+file round-trips; it cannot show that the kernel would write the same file again.
+With the tree and the schedule it was recorded against, the run is executed afresh
+at the recorded seed and block size and compared byte for byte, and a divergence is
+reported at the first event that differs. The journal names its tree by digest, and
+a tree that has been edited since is refused rather than run: a divergence there
+would say nothing about the kernel.
 """
 
 from __future__ import annotations
@@ -33,6 +42,7 @@ from zeos.core.events import (
     FaultRaised,
     JobPreempted,
     JobResumed,
+    KernelStarted,
     VectorFired,
 )
 from zeos.core.kernel import KernelConfig
@@ -40,7 +50,8 @@ from zeos.descriptor.lint import LintOptions, Severity, lint
 from zeos.descriptor.loader import load_case
 from zeos.descriptor.schema import DescriptorError
 from zeos.driver import Driver, build_kernel, load_schedule
-from zeos.journal.writer import Journal, read_journal
+from zeos.journal.codec import to_line
+from zeos.journal.writer import Journal, JournalRecord, read_journal
 from zeos.machine.base import render
 from zeos.machine.seat import CommandSeat, TapeSource
 from zeos.store_dump import read_store, write_store
@@ -153,7 +164,70 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         print(f"replay is byte-identical ({len(records)} events)")
     else:
         print(f"{len(records)} events replayed cleanly")
+    if args.case:
+        return _reexecute(args, path, records)
     return 0
+
+
+def _reexecute(args: argparse.Namespace, path: Path, records: list[JournalRecord]) -> int:
+    """Run the journal's tree again and hold the new journal against the recorded one."""
+    started = records[0].event if records else None
+    if not isinstance(started, KernelStarted):
+        print("journal does not open with kernel.started; no run to re-execute", file=sys.stderr)
+        return 1
+    if not started.case_digest:
+        print(
+            "journal names no case tree, so it cannot be held against one: it was "
+            "written by a kernel assembled in code, or before journals carried a digest",
+            file=sys.stderr,
+        )
+        return 1
+    bundle = load_case(Path(args.case))
+    if started.case_digest != bundle.digest:
+        print(
+            f"{args.case} is not the tree this journal is a run of "
+            f"(journal {started.case_digest[:12]}, tree {bundle.digest[:12]})",
+            file=sys.stderr,
+        )
+        return 1
+
+    machine = (
+        CommandSeat(source=TapeSource(bundle.scripts), block_size=started.block_size)
+        if args.machine == "seat"
+        else None
+    )
+    kernel, transport = build_kernel(
+        bundle,
+        machine=machine,
+        journal_sink=[],
+        # The recorded name, not the directory's: a tree that has been moved or
+        # renamed is still the same tree, and the digest has already said so.
+        config=KernelConfig(seed=started.seed, case=started.case),
+        block_size=started.block_size,
+    )
+    journal = Journal()
+    driver = Driver(kernel, transport=transport, journal=journal)
+    driver.boot(bundle.boot)
+    driver.run(load_schedule(Path(args.events)) if args.events else ())
+
+    if journal.to_bytes() == path.read_bytes():
+        print(f"re-execution is byte-identical ({len(journal)} events)")
+        return 0
+
+    recorded = [to_line(r.seq, r.event) for r in records]
+    rerun = journal.lines()
+    at = next(
+        (i for i, (a, b) in enumerate(zip(recorded, rerun, strict=False)) if a != b),
+        min(len(recorded), len(rerun)),
+    )
+    print(
+        f"re-execution DIVERGES at seq {at} "
+        f"(journal has {len(recorded)} events, re-execution {len(rerun)})",
+        file=sys.stderr,
+    )
+    print(f"  journal:      {recorded[at] if at < len(recorded) else '(ends)'}", file=sys.stderr)
+    print(f"  re-execution: {rerun[at] if at < len(rerun) else '(ends)'}", file=sys.stderr)
+    return 1
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
@@ -349,6 +423,20 @@ def main(argv: list[str] | None = None) -> int:
     p_replay = sub.add_parser("replay", help="re-read a journal and check it reproduces")
     p_replay.add_argument("journal")
     p_replay.add_argument("--assert-identical", action="store_true")
+    p_replay.add_argument(
+        "--case",
+        default=None,
+        help="the tree the journal is a run of; run it again and compare byte for byte",
+    )
+    p_replay.add_argument(
+        "--events", default=None, help="with --case: the schedule the run was given"
+    )
+    p_replay.add_argument(
+        "--machine",
+        choices=("scripted", "seat"),
+        default="scripted",
+        help="with --case: the machine the run was given",
+    )
     p_replay.set_defaults(func=_cmd_replay)
 
     p_inspect = sub.add_parser("inspect", help="summarise a journal")

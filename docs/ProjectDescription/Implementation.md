@@ -71,7 +71,7 @@ src/zeos/
 │   └── seat.py              the seat: one word per decode, parser, transcript rebuild [AM §11]
 ├── descriptor/
 │   ├── schema.py            frontmatter → Descriptor, strict parsing
-│   ├── loader.py            markdown + YAML, case directories
+│   ├── loader.py            markdown + YAML, case directories, the tree's digest
 │   └── lint.py              load-time rejection: core + MP + VM rules
 ├── nli/                     instruction as compilation -- deliberately the untrusted half
 │   ├── envelope.py          utterance envelopes, deixis, the local safety vocabulary

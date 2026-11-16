@@ -20,6 +20,7 @@ descriptor schema has to change.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,7 +52,7 @@ from zeos.core.vectors import VectorSpec
 from zeos.descriptor.schema import Descriptor, DescriptorError, parse_duration_ns
 from zeos.machine.scripted import Script
 
-__all__ = ["CaseBundle", "load_case", "parse_descriptor_file", "split_frontmatter"]
+__all__ = ["CaseBundle", "case_digest", "load_case", "parse_descriptor_file", "split_frontmatter"]
 
 _FENCE = "---"
 _DESCRIPTOR_DIRS = ("goals", "handlers", "services", "guards")
@@ -82,6 +83,9 @@ class CaseBundle:
     #: by their vectors -- so this is normally just the goal jobs.
     boot: tuple[DescriptorName, ...] = ()
     root: Path | None = None
+    #: ``case_digest`` of the tree this was loaded from; empty for a bundle built in
+    #: code. Journalled at kernel start, so a journal names the tree it is a run of.
+    digest: str = ""
 
 
 def split_frontmatter(text: str, *, source: str) -> tuple[Mapping[str, Any], str]:
@@ -165,7 +169,33 @@ def load_case(root: Path) -> CaseBundle:
         world=_load_world(system / "world-state.yaml"),
         boot=_load_boot(system / "boot.yaml", root, descriptors, vectors),
         root=root,
+        digest=case_digest(root),
     )
+
+
+def case_digest(root: Path) -> str:
+    """A SHA-256 over every file that can change what ``load_case`` returns.
+
+    Those are the descriptors, ``system/*.yaml`` and ``platforms/*.yaml``. An event
+    schedule is not among them: it is an input to a run, not part of the tree, and
+    the same tree is meant to be run against many schedules.
+
+    Each file contributes its path relative to the root, its length, and its bytes,
+    in sorted path order -- so a rename is a change, two files cannot be confused
+    with one file holding both, and the digest does not depend on where the tree
+    sits or on the order a directory happens to list.
+    """
+    paths = {
+        *_descriptor_paths(root),
+        *(root / "system").glob("*.yaml"),
+        *(root / "platforms").glob("*.yaml"),
+    }
+    digest = hashlib.sha256()
+    for relative, path in sorted((p.relative_to(root).as_posix(), p) for p in paths):
+        content = path.read_bytes()
+        digest.update(f"{relative}\0{len(content)}\0".encode())
+        digest.update(content)
+    return digest.hexdigest()
 
 
 def _load_boot(
