@@ -81,7 +81,14 @@ class Scheduler:
         return tuple(sorted(self._live.values(), key=lambda j: j.seq))
 
     def in_state(self, state: JobState) -> tuple[Job, ...]:
-        return tuple(j for j in self.jobs() if j.state is state)
+        """The jobs in ``state``, in stable spawn order.
+
+        A terminal job is found among ``jobs()`` and nowhere else: the pipe-write
+        path asks this on every write, so its cost must follow the jobs that can
+        still run rather than every job the kernel has ever finished.
+        """
+        pool = self.jobs() if state.is_terminal else self.live()
+        return tuple(j for j in pool if j.state is state)
 
     # -- running ------------------------------------------------------------
 
